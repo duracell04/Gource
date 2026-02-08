@@ -139,6 +139,11 @@ if(extended_help) {
     printf("  --file-extensions          Show filename extensions only\n");
     printf("  --file-extension-fallback  Use filename as extension if the extension\n");
     printf("                             is missing or empty\n\n");
+    printf("  --disable-file-preview       Disable file hover previews\n");
+    printf("  --disable-file-open          Disable opening files on click\n");
+    printf("  --file-preview-lines N       Max lines shown in file preview (default: 6)\n");
+    printf("  --file-preview-max-bytes N   Max bytes read for file preview (default: 4096)\n");
+    printf("  --file-preview-line-chars N  Max characters per preview line (default: 120)\n\n");
 
     printf("  --git-branch             Get the git log of a particular branch\n\n");
 
@@ -275,6 +280,8 @@ GourceSettings::GourceSettings() {
     arg_types["highlight-dirs"]          = "bool";
     arg_types["file-extensions"]         = "bool";
     arg_types["file-extension-fallback"] = "bool";
+    arg_types["disable-file-preview"]    = "bool";
+    arg_types["disable-file-open"]       = "bool";
     arg_types["fixed-user-size"]         = "bool";
     arg_types["author-time"]             = "bool";
     arg_types["key"]                     = "bool";
@@ -310,6 +317,9 @@ GourceSettings::GourceSettings() {
     arg_types["file-font-size"] = "int";
     arg_types["dir-font-size"] = "int";
     arg_types["user-font-size"] = "int";
+    arg_types["file-preview-lines"] = "int";
+    arg_types["file-preview-max-bytes"] = "int";
+    arg_types["file-preview-line-chars"] = "int";
     arg_types["hash-seed"] = "int";
 
     arg_types["user-filter"]      = "multi-value";
@@ -502,6 +512,11 @@ void GourceSettings::setGourceDefaults() {
 
     file_extensions = false;
     file_extension_fallback = false;
+    file_preview = true;
+    file_open_on_click = true;
+    file_preview_lines = 6;
+    file_preview_max_bytes = 4096;
+    file_preview_line_chars = 120;
 
     //delete user filters
     for(std::vector<Regex*>::iterator it = user_filters.begin(); it != user_filters.end(); it++) {
@@ -719,6 +734,12 @@ void GourceSettings::importGourceSettings(ConfFile& conffile, ConfSection* gourc
 
     if(gource_settings->getBool("disable-input")) {
         disable_input=true;
+    }
+    if(gource_settings->getBool("disable-file-preview")) {
+        file_preview=false;
+    }
+    if(gource_settings->getBool("disable-file-open")) {
+        file_open_on_click=false;
     }
 
     if(gource_settings->getBool("loop")) {
@@ -946,6 +967,39 @@ void GourceSettings::importGourceSettings(ConfFile& conffile, ConfSection* gourc
 
         if(filename_time<2.0f) {
             conffile.entryException(entry, "filename-time must be >= 2.0");
+        }
+    }
+
+    if((entry = gource_settings->getEntry("file-preview-lines")) != 0) {
+
+        if(!entry->hasValue()) conffile.entryException(entry, "specify file-preview-lines (lines)");
+
+        file_preview_lines = entry->getInt();
+
+        if(file_preview_lines < 1 || file_preview_lines > 200) {
+            conffile.invalidValueException(entry);
+        }
+    }
+
+    if((entry = gource_settings->getEntry("file-preview-max-bytes")) != 0) {
+
+        if(!entry->hasValue()) conffile.entryException(entry, "specify file-preview-max-bytes (bytes)");
+
+        file_preview_max_bytes = entry->getInt();
+
+        if(file_preview_max_bytes < 64) {
+            conffile.invalidValueException(entry);
+        }
+    }
+
+    if((entry = gource_settings->getEntry("file-preview-line-chars")) != 0) {
+
+        if(!entry->hasValue()) conffile.entryException(entry, "specify file-preview-line-chars (chars)");
+
+        file_preview_line_chars = entry->getInt();
+
+        if(file_preview_line_chars < 8 || file_preview_line_chars > 1024) {
+            conffile.invalidValueException(entry);
         }
     }
 

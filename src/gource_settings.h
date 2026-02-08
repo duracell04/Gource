@@ -154,6 +154,11 @@ public:
     std::vector<Regex*> user_show_filters;
     bool file_extensions;
     bool file_extension_fallback;
+    bool file_preview;
+    bool file_open_on_click;
+    int file_preview_lines;
+    int file_preview_max_bytes;
+    int file_preview_line_chars;
 
     std::string caption_file;
     vec3 caption_colour;

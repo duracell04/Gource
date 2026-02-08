@@ -21,6 +21,7 @@
 #include <deque>
 #include <list>
 #include <fstream>
+#include <vector>
 
 #include "core/display.h"
 #include "core/shader.h"
@@ -98,6 +99,8 @@ class Gource : public SDLApp {
 
     RFile* hoverFile;
     RFile* selectedFile;
+    std::string hoverFilePreviewPath;
+    std::vector<std::string> hoverFilePreviewLines;
 
     RUser* hoverUser;
     RUser* selectedUser;
@@ -233,6 +236,9 @@ class Gource : public SDLApp {
     void updateTime(time_t display_time);
 
     void mousetrace(float dt);
+    void updateHoverFilePreview(RFile* file);
+    std::string resolveFilePath(const RFile* file) const;
+    void openFileFromHover(RFile* file);
 
     bool canSeek();
     void seekTo(float percent);

@@ -18,11 +18,64 @@
 #include "gource.h"
 #include "core/png_writer.h"
 
+#include <algorithm>
+#include <cctype>
+#include <cstdint>
+#include <cstdlib>
+
+#include <boost/filesystem.hpp>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 bool  gGourceDrawBackground  = true;
 bool  gGourceQuadTreeDebug   = false;
 int   gGourceMaxQuadTreeDepth = 6;
 
 int gGourceUserInnerLoops = 0;
+
+static bool isLikelyText(const std::string& buffer) {
+    for(size_t i = 0; i < buffer.size(); ++i) {
+        unsigned char ch = static_cast<unsigned char>(buffer[i]);
+        if(ch == 0) return false;
+        if(ch < 9 || (ch > 13 && ch < 32)) return false;
+    }
+    return true;
+}
+
+#if !defined(_WIN32)
+static std::string shellEscape(const std::string& path) {
+    std::string escaped;
+    escaped.reserve(path.size() + 2);
+    escaped.push_back('\'');
+    for(size_t i = 0; i < path.size(); ++i) {
+        if(path[i] == '\'') {
+            escaped.append("'\\''");
+        } else {
+            escaped.push_back(path[i]);
+        }
+    }
+    escaped.push_back('\'');
+    return escaped;
+}
+#endif
+
+static bool openFileWithShell(const std::string& path) {
+#if defined(_WIN32)
+    HINSTANCE result = ShellExecuteA(NULL, "open", path.c_str(), NULL, NULL, SW_SHOWNORMAL);
+    return reinterpret_cast<intptr_t>(result) > 32;
+#elif defined(__APPLE__)
+    std::string cmd = "open " + shellEscape(path);
+    return system(cmd.c_str()) == 0;
+#else
+    std::string cmd = "xdg-open " + shellEscape(path);
+    return system(cmd.c_str()) == 0;
+#endif
+}
 
 Gource::Gource(FrameExporter* exporter) {
 
@@ -133,6 +186,8 @@ Gource::Gource(FrameExporter* exporter) {
 
     selectedFile = 0;
     hoverFile = 0;
+    hoverFilePreviewLines.clear();
+    hoverFilePreviewPath.clear();
     selectedUser = 0;
     hoverUser = 0;
 
@@ -966,6 +1021,8 @@ void Gource::deleteFile(RFile* file) {
 
     if(hoverFile == file) {
         hoverFile = 0;
+        hoverFilePreviewLines.clear();
+        hoverFilePreviewPath.clear();
     }
 
     if(selectedFile == file) {
@@ -1877,6 +1934,145 @@ void Gource::logic(float t, float dt) {
     updateTime(!commitqueue.empty() ? currtime : lasttime);
 }
 
+std::string Gource::resolveFilePath(const RFile* file) const {
+    if(file == 0) return std::string();
+
+    boost::filesystem::path file_path(file->fullpath);
+    if(file_path.empty()) return std::string();
+
+    try {
+        if(file_path.is_absolute()) {
+            return file_path.make_preferred().string();
+        }
+
+        boost::filesystem::path base(gGourceSettings.path);
+        if(!base.empty()) {
+            if(boost::filesystem::exists(base) && boost::filesystem::is_regular_file(base)) {
+                base = base.parent_path();
+            }
+            if(!base.empty()) {
+                boost::filesystem::path joined = base / file_path;
+                return joined.make_preferred().string();
+            }
+        }
+    } catch(...) {
+        // fall back to original path
+    }
+
+    return file_path.make_preferred().string();
+}
+
+void Gource::updateHoverFilePreview(RFile* file) {
+    hoverFilePreviewLines.clear();
+    hoverFilePreviewPath.clear();
+
+    if(!gGourceSettings.file_preview || file == 0) return;
+
+    std::string resolved_path = resolveFilePath(file);
+    if(resolved_path.empty()) return;
+
+    hoverFilePreviewPath = resolved_path;
+
+    std::ifstream infile(resolved_path.c_str(), std::ios::in | std::ios::binary);
+    if(!infile.is_open()) {
+        hoverFilePreviewLines.push_back("[preview unavailable]");
+        return;
+    }
+
+    size_t max_bytes = static_cast<size_t>(gGourceSettings.file_preview_max_bytes);
+    std::string buffer;
+    buffer.resize(max_bytes);
+    infile.read(&buffer[0], max_bytes);
+    size_t read_bytes = static_cast<size_t>(infile.gcount());
+    buffer.resize(read_bytes);
+
+    if(buffer.empty()) {
+        hoverFilePreviewLines.push_back("[empty file]");
+        return;
+    }
+
+    if(!isLikelyText(buffer)) {
+        hoverFilePreviewLines.push_back("[binary file]");
+        return;
+    }
+
+    size_t start = 0;
+    int lines_added = 0;
+    int max_lines = gGourceSettings.file_preview_lines;
+    int max_chars = gGourceSettings.file_preview_line_chars;
+    bool more_content = false;
+
+    while(start < buffer.size() && lines_added < max_lines) {
+        size_t end = buffer.find('\n', start);
+        if(end == std::string::npos) {
+            end = buffer.size();
+        }
+
+        std::string line = buffer.substr(start, end - start);
+        if(!line.empty() && line[line.size() - 1] == '\r') {
+            line.erase(line.size() - 1);
+        }
+
+        if(static_cast<int>(line.size()) > max_chars) {
+            line = line.substr(0, max_chars);
+            line.append("...");
+        }
+
+        hoverFilePreviewLines.push_back(line);
+        lines_added++;
+
+        if(end == buffer.size()) {
+            break;
+        }
+        start = end + 1;
+    }
+
+    if(start < buffer.size() || !infile.eof()) {
+        more_content = true;
+    }
+
+    if(more_content && !hoverFilePreviewLines.empty()) {
+        std::string& last_line = hoverFilePreviewLines.back();
+        if(last_line.size() < 3 || last_line.substr(last_line.size() - 3) != "...") {
+            last_line.append(" ...");
+        }
+    }
+}
+
+void Gource::openFileFromHover(RFile* file) {
+    if(file == 0 || !gGourceSettings.file_open_on_click) return;
+
+    std::string resolved_path;
+    if(file == hoverFile && !hoverFilePreviewPath.empty()) {
+        resolved_path = hoverFilePreviewPath;
+    } else {
+        resolved_path = resolveFilePath(file);
+    }
+    if(resolved_path.empty()) {
+        setMessage("Unable to resolve file path");
+        return;
+    }
+
+    try {
+        boost::filesystem::path file_path(resolved_path);
+        if(!boost::filesystem::exists(file_path)) {
+            setMessage("File not found");
+            return;
+        }
+        if(!boost::filesystem::is_regular_file(file_path)) {
+            setMessage("Not a regular file");
+            return;
+        }
+    } catch(...) {
+        setMessage("Unable to access file");
+        return;
+    }
+
+    if(!openFileWithShell(resolved_path)) {
+        setMessage("Could not open file");
+    }
+}
+
 void Gource::mousetrace(float dt) {
 
     vec3 cam_pos = camera.getPos();
@@ -1947,6 +2143,7 @@ void Gource::mousetrace(float dt) {
             //select new
             fileSelection->setMouseOver(true);
             hoverFile = fileSelection;
+            updateHoverFilePreview(hoverFile);
         }
 
     // is over a user
@@ -1955,6 +2152,7 @@ void Gource::mousetrace(float dt) {
         if(hoverFile != 0) {
             hoverFile->setMouseOver(false);
             hoverFile = 0;
+            updateHoverFilePreview(0);
         }
 
         if(userSelection != hoverUser) {
@@ -1970,6 +2168,7 @@ void Gource::mousetrace(float dt) {
         if(hoverUser!=0) hoverUser->setMouseOver(false);
         hoverFile=0;
         hoverUser=0;
+        updateHoverFilePreview(0);
     }
 
     if(mouseclicked) {
@@ -1980,6 +2179,7 @@ void Gource::mousetrace(float dt) {
         } else if(hoverFile!=0) {
             camera.lockOn(false);
             selectFile(hoverFile);
+            openFileFromHover(hoverFile);
         } else {
             selectBackground();
         }
@@ -2679,6 +2879,14 @@ void Gource::draw(float t, float dt) {
         textbox.setText(hoverFile->getName());
         if(display_path.size()) textbox.addLine(display_path);
         textbox.setColour(hoverFile->getColour());
+
+        if(gGourceSettings.file_preview && !hoverFilePreviewLines.empty()) {
+            textbox.addLine("");
+            textbox.addLine("preview:");
+            for(std::vector<std::string>::const_iterator it = hoverFilePreviewLines.begin(); it != hoverFilePreviewLines.end(); it++) {
+                textbox.addLine(*it);
+            }
+        }
 
         textbox.setPos(mousepos, true);
         textbox.draw();
